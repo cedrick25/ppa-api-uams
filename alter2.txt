@@ -1,0 +1,2 @@
+ALTER TABLE `F21T2_RCV` CHANGE `received_date` `received_date` DATE NULL;
+ALTER TABLE `F21T2_ACTED` CHANGE `psir_date` `psir_date` DATE NULL;

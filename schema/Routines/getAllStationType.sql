@@ -1,0 +1,5 @@
+DELIMITER $$
+CREATE DEFINER=`wms-user`@`localhost` PROCEDURE `getAllStationType`(IN `stat` INT)
+    NO SQL
+SELECT ST.* FROM STATION_TYPE ST WHERE ST.STATUS = stat$$
+DELIMITER ;

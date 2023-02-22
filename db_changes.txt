@@ -1,0 +1,20 @@
+ALTER TABLE `F5T2_RCV` ADD `plea_bargain` TEXT NULL AFTER `is_civil`;
+
+
+ALTER TABLE `F5T4` ADD `reason_denial` TEXT NULL AFTER `created_by`, ADD `other_types` TEXT NULL AFTER `reason_denial`;
+
+ALTER TABLE `F5T9` ADD `reason_other` TEXT NULL AFTER `transfer`;
+
+ALTER TABLE `F5T11` ADD `reason_other` TEXT NULL AFTER `transfer`;
+
+
+ALTER TABLE `F21T9_PAROL` ADD `others` TEXT NULL AFTER `created_by`, ADD `submitted_report` TEXT NULL AFTER `others`;
+
+
+ALTER TABLE `F21T9_PARDON` ADD `others` TEXT NULL AFTER `created_by`, ADD `submitted_report` TEXT NULL AFTER `others`;
+
+
+ALTER TABLE `F21T11_PAROL` ADD `others` TEXT NULL AFTER `created_by`, ADD `submitted_report` TEXT NULL AFTER `others`;
+
+
+ALTER TABLE `F21T11_PARDON` ADD `others` TEXT NULL AFTER `created_by`, ADD `submitted_report` TEXT NULL AFTER `others`;
