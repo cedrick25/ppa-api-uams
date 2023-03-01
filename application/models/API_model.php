@@ -307,7 +307,7 @@
 				$referer = $referer['host'];
 	    	}
 	    	
-	    	if($referer !== 'unified.probation.gov.ph' && $referer !== '192.168.100.3' && $referer !== '192.168.100.14' && $referer !== '192.168.100.14' && $referer !== '192.168.10.199' && $referer !== '192.168.100.4' && $referer !== '192.168.254.115' && $referer !== '192.168.1.219' && $referer !== '127.0.0.1' && $referer !== 'ks' && $referer !== '202.90.136.122' && $referer !== '192.168.0.109'){
+	    	if($referer !== 'unified.probation.gov.ph' && $referer !== '192.168.1.33'  && $referer !== '192.168.100.3' && $referer !== '192.168.100.14' && $referer !== '192.168.100.14' && $referer !== '192.168.10.199' && $referer !== '192.168.100.4' && $referer !== '192.168.254.115' && $referer !== '192.168.1.219' && $referer !== '127.0.0.1' && $referer !== 'ks' && $referer !== '202.90.136.122' && $referer !== '192.168.0.109'){
 			    die('Unauthorized access');
 			}
 	    	
@@ -1301,21 +1301,30 @@
 
 				}else{
 					//FOR INSERT
-					$FOR_ENROLMENT = 0;
-					$IS_UPDATE = 0;
-					if($payload->STATUS == 1){
-						$FOR_ENROLMENT = 1;
-						$IS_UPDATE = 1;
-					}
-					$data = array(	
-								"FOR_ENROLMENT" => $FOR_ENROLMENT,
-								"IS_UPDATE" => $IS_UPDATE,
+					// $FOR_ENROLMENT = 0;
+					// $IS_UPDATE = 0;
+					// if($payload->STATUS == 1){
+					// 	$FOR_ENROLMENT = 1;
+					// 	$IS_UPDATE = 1;
+					// }
+					// $data = array(	
+					// 			"FOR_ENROLMENT" => $FOR_ENROLMENT,
+					// 			"IS_UPDATE" => $IS_UPDATE,
+					// 			"STATUS" => $payload->STATUS,
+					// 			"INFO_SYSTEM_ID" => $payload->INFO_SYSTEM_ID,
+					// 			"USER_ID" => $payload->USER_ID,
+					// 			"DATE_CREATED" => date("Y-m-d H:i:s")
+					// 		);
+			
+					$data = array(
+								"IS_UPDATE" => "0",
+								"FOR_ENROLMENT" => "0",
+								"ENROLMENT_STATUS" => "1",
 								"STATUS" => $payload->STATUS,
 								"INFO_SYSTEM_ID" => $payload->INFO_SYSTEM_ID,
 								"USER_ID" => $payload->USER_ID,
 								"DATE_CREATED" => date("Y-m-d H:i:s")
 							);
-			
 
 					if($this->db->insert('INFO_SYSTEM_USERS', $data)){
 						$response = array('status' => 'SUCCESS',
@@ -1496,15 +1505,15 @@
 							 'message' => 'SUCCESSFULLY UPDATING USER'
 							 );
 
-				if($isPasswordUpdate == 1){
-					$this->db->reconnect();
-					$update = array();
-					$update = array_merge($update,  array("IS_UPDATE"=>1));
-					$this->db->where('USER_ID',$payload->USER_ID);
-					$this->db->where('ENROLMENT_STATUS',1);
-					$this->db->update('INFO_SYSTEM_USERS', $update);
+				// if($isPasswordUpdate == 1){
+				// 	$this->db->reconnect();
+				// 	$update = array();
+				// 	$update = array_merge($update,  array("IS_UPDATE"=>1));
+				// 	$this->db->where('USER_ID',$payload->USER_ID);
+				// 	$this->db->where('ENROLMENT_STATUS',1);
+				// 	$this->db->update('INFO_SYSTEM_USERS', $update);
 					
-				}
+				// }
 
 
 				return json_encode($response);
