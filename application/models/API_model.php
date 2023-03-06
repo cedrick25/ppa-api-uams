@@ -938,7 +938,8 @@
 			
 			#echo "SELECT * FROM USER_LEVEL WHERE USER_LEVEL_ID = '".$USER_ID."'";
 		    $query = $this->db->query("SELECT *, INS.INFO_SYSTEM_ID as `SYSTEM_ID` FROM INFO_SYSTEM INS LEFT JOIN `INFO_SYSTEM_USERS`  ISS on INS.INFO_SYSTEM_ID = ISS.INFO_SYSTEM_ID
-		    	and ISS.USER_ID = '".$USER_ID."'");
+		    	and ISS.USER_ID = '".$USER_ID."' 
+		    	where INS.INFO_SYSTEM_STATUS = '1'");
 		    #echo $query;
 			if($query){
 				if($query->num_rows() > 0){
