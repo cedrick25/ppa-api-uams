@@ -1929,7 +1929,7 @@
 					  'message' => 'Error Sending OTP.'
 					);
 	            }
-                echo $this->email->print_debugger();
+                // echo $this->email->print_debugger();
 
 				return json_encode($response);
 	        } else {
