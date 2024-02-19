@@ -1893,7 +1893,7 @@
 	                'smtp_port' => '587',
 	                'smtp_user' => 'notification@probation.gov.ph',
 	                'smtp_from_name' => 'PPA Notification',
-	                'smtp_pass' => 'Pp@_notificati0n2023',
+	                'smtp_pass' => 'N0tific@tion@PPA2022',
 	                'mailtype'  => 'html',
 	                'charset' => 'utf-8',
 	                'starttls'  => 'true',
