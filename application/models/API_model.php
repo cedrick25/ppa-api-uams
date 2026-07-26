@@ -312,10 +312,33 @@
 	    	$referer = "";
 	    	if(isset($_SERVER['HTTP_REFERER'])){
 	    		$referer = parse_url($_SERVER['HTTP_REFERER']);
-				$referer = $referer['host'];
+				$referer = isset($referer['host']) ? strtolower($referer['host']) : '';
 	    	}
+
+	    	$allowed_referers = array(
+	    		'rpxy.probation.gov.ph',
+	    		'uams.probation.gov.ph',
+	    		'192.168.1.183',
+	    		'192.168.1.147',
+	    		'192.168.1.36',
+	    		'192.168.1.33',
+	    		'192.168.1.38',
+	    		'192.168.1.35',
+	    		'192.168.100.3',
+	    		'192.168.100.14',
+	    		'192.168.10.199',
+	    		'192.168.100.4',
+	    		'192.168.254.115',
+	    		'192.168.1.219',
+	    		'127.0.0.1',
+	    		'localhost',
+	    		'ks',
+	    		'202.90.136.122',
+	    		'192.168.0.109',
+	    	);
+	    	$allow_probation_domain = ($referer !== '' && substr($referer, -strlen('.probation.gov.ph')) === '.probation.gov.ph');
 	    	
-	    	if($referer !== 'uams.probation.gov.ph' && $referer !== '192.168.1.183' && $referer !== '192.168.1.147' && $referer !== '192.168.1.36' && $referer !== '192.168.1.33'  && $referer !== '192.168.1.38'  && $referer !== '192.168.1.35' && $referer !== '192.168.100.3' && $referer !== '192.168.100.14' && $referer !== '192.168.100.14' && $referer !== '192.168.10.199' && $referer !== '192.168.100.4' && $referer !== '192.168.254.115' && $referer !== '192.168.1.219' && $referer !== '127.0.0.1' && $referer !== 'ks' && $referer !== '202.90.136.122' && $referer !== '192.168.0.109'){
+	    	if($referer === '' || (!in_array($referer, $allowed_referers, TRUE) && !$allow_probation_domain)){
 			    die('Unauthorized access');
 			}
 	    	
@@ -434,7 +457,17 @@
 				$USER_ID = $payload->USER_ID;
 			}
 			
-			$url = 'http://192.168.1.224/ppa-api/wsv1/Api/doLogout';
+			$logout_base = getenv('CMIS_LOGOUT_URL');
+			if ($logout_base === FALSE || $logout_base === '') {
+				$scheme = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off')
+					|| (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
+					? 'https' : 'http';
+				$host = !empty($_SERVER['HTTP_X_FORWARDED_HOST'])
+					? trim(explode(',', $_SERVER['HTTP_X_FORWARDED_HOST'])[0])
+					: (!empty($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '127.0.0.1');
+				$logout_base = $scheme . '://' . $host . '/ppa-api/wsv1/Api/doLogout';
+			}
+			$url = $logout_base;
 			$ch = curl_init($url);
 			$data = array(
 			    'USER_EMAIL' => $payload->USER_EMAIL
