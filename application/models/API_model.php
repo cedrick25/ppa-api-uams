@@ -349,12 +349,32 @@
 					return json_encode($response);
 			}
 
-			$this->db->where(array('USER_EMAIL'=>$payload->USERNAME,'USER_PASS'=>base64_encode($payload->PASSWORD) ));
+			// Look up by email first, then verify password.
+			// Supports legacy base64 USER_PASS and modern password_hash() values (e.g. argon2id).
+			$this->db->where(array('USER_EMAIL'=>$payload->USERNAME));
 		    $query = $this->db->get('USERS');
 
 			if($query){
 				if($query->num_rows() > 0){
 					$user = $query->row();
+					$plainPassword = (string) $payload->PASSWORD;
+					$storedPassword = (string) $user->USER_PASS;
+					$passwordOk = ($storedPassword === base64_encode($plainPassword));
+					if(!$passwordOk && strlen($storedPassword) > 0 && (
+						strpos($storedPassword, '$2y$') === 0 ||
+						strpos($storedPassword, '$2a$') === 0 ||
+						strpos($storedPassword, '$2b$') === 0 ||
+						strpos($storedPassword, '$argon2') === 0
+					)){
+						$passwordOk = password_verify($plainPassword, $storedPassword);
+					}
+
+					if(!$passwordOk){
+						$response = array('status' => 'FAILED',
+										  'message' => 'USERNAME or PASSWORD Didn\'t Match!');
+						return json_encode($response);
+					}
+
 						$response = array('status' => 'SUCCESS',
 										 'message' => 'LOGIN SUCCESS',
 										 'payload' => array("USER_ID"=>$user->USER_ID,
