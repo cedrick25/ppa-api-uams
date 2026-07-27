@@ -257,10 +257,4 @@ class Api extends CI_Controller {
 		$payload = json_decode(file_get_contents('php://input'));
 		echo $this->API_model->Email($payload);
 	}
-
-	public function insertSMSManually()
-	{
-		$payload = json_decode(file_get_contents('php://input'));
-		echo $this->API_model->insertSMSManually($payload);
-	}
 }
