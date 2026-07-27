@@ -2001,6 +2001,134 @@
 			return json_encode($response);
 	    }
 
+		public function verifyApiKeyHash($payload){
+			log_message('debug', '[SMS] Verifying API KEY.');
+			log_message('debug', 'Data: ' . json_encode($payload));
+			$ip = $this->input->ip_address();
+			log_message('debug', 'IP ADDRESS: ' . $ip);
+			if(isset($payload->api_key) && $payload->api_key != ""){
+				$this->load->database();
+				$this->db->where('api_key_HASH', $payload->api_key );
+			    $query = $this->db->get('api_key');
+				if($count_row = $query->num_rows() == 0){
+					log_message('error', '[SMS] INVALID API KEY | Data: ' . json_encode($payload));
+					$response = array('status' => 'ERROR',
+									 'message' => '[SMS] API KEY INVALID!');
+				}else{
+					$api = $query->row();
+					if($api->api_key_IP == '*'){
+						log_message('debug', '[SMS] Valid API KEY.');
+						$response = array('status' => 'SUCCESS',
+								 'message' => 'API FOUND',
+								 'payload' => array('api_key_ID'=>$api->api_key_ID));
+					}else if($api->api_key_IP == $ip){
+						log_message('debug', '[SMS] Valid API KEY.');
+						$response = array('status' => 'SUCCESS',
+								 'message' => 'API FOUND',
+								 'payload' => array('api_key_ID'=>$api->api_key_ID));	
+					}else{
+						log_message('error', '[SMS] Invalid IP Source Address');
+						$response = array('status' => 'ERROR',
+								 'message' => 'INVALID IP SOURCE ADDRESS');
+					}
+				}
+			}else{
+				log_message('error', '[SMS] API KEY NOT FOUND | Data: ' . json_encode($payload));
+				$response = array('status' => 'ERROR',
+								 'message' => 'API KEY NOT FOUND');
+			}
+				return json_encode($response);
+		}
+
+		public function dateValidation($date){
+			if($date != null){
+				$dateNow = date_create($date);
+				$dateFormat = date_format($dateNow, 'Y-m-d');
+				$timeFormat = date_format($dateNow, 'H:i');
+				if(strtotime($dateFormat) >= strtotime(date('Y-m-d '))){
+					if(strtotime($timeFormat) >= strtotime(date('H:i '))){
+						$response = array(
+							'status' => 'SUCCESS',
+							'message' => 'SUCCESSS'
+						);
+					}else{
+						$response = array(
+							'status' => 'ERROR',
+							'message' => 'TIME CANNOT BE LESS THAN TODAY!'
+						);
+					}
+				}else{
+					$response = array(
+						'status' => 'ERROR',
+						'message' => 'DATE CANNOT BE LESS THAN TODAY!'
+					);
+				}
+			}else{
+				$response = array(
+					'status' => 'ERROR',
+					'message' => 'DATE CANNOT BE NULL'
+				);
+			}
+			return json_encode($response);
+		}
+
+		public function insertSMSManually($payload){
+			if($payload != null){
+				$verify = json_decode($this->verifyApiKeyHash($payload));
+				if($verify->status == 'SUCCESS'){
+					$ip = $this->input->ip_address();
+					$field = ["message_CONTENT", "message_DATETIME", "message_TO", "CREATED_BY"];
+					$errorFields = array();
+					$required_param = 3;
+					$data = array();
+					foreach ($payload as $key => $value) {
+						if($key != 'api_key'){
+							if(!empty($value) && in_array($key, $field)){
+								$data = array_merge($data, array($key => $value));
+								$required_param--;
+							}else{
+								array_push($errorFields, $key.' cannot be empty ');
+							}
+						}
+					}
+					if($required_param <= 0){
+						$validateDate= json_decode($this->dateValidation($payload->message_DATETIME));
+						if($validateDate->status == 'SUCCESS'){
+							$data = array_merge($data, array('api_key_ID' => $verify->payload->api_key_ID, 'message_FROM' => $ip, 'CREATED_DATE' => date('Y-m-d H:i:s')));
+							$insert = $this->db->insert('message', $data);
+							if($insert){
+								$response = array(
+									'status' => 'SUCCESS',
+									'message' => 'SUCCESS INSERTING MESSAGE!',
+									'payload' => $this->db->insert_id()
+								);
+							}else{
+								$response = array(
+									'status' => 'ERROR',
+									'message' => 'ERROR INSERTING MESSAGE!'
+								);
+							}
+						}else{
+							$response = $validateDate;
+						}
+					}else{
+						$response = array(
+							'status' => 'ERROR',
+							'message' => $errorFields
+						);
+					}
+				}else{
+					$response = $verify;
+				}
+			}else{
+				$response = array(
+					'status' => 'ERROR',
+					'message' => 'PLEASE CHECK YOUR DATA!'
+				);
+			}
+			return json_encode($response);
+		}
+
 	}
 
 
