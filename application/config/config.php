@@ -551,3 +551,18 @@ $__proxy_env = getenv('PROXY_IPS');
 $config['proxy_ips'] = ($__proxy_env !== FALSE && $__proxy_env !== '')
 	? $__proxy_env
 	: array('127.0.0.1', '::1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16');
+
+/*
+|--------------------------------------------------------------------------
+| EDMS user-fetch API key
+|--------------------------------------------------------------------------
+|
+| Used only by wsv1/Edms. Empty value rejects all calls (fail closed).
+| Set Apache/Nginx env: SetEnv EDMS_API_KEY "your-long-random-string"
+|
+*/
+$__edms_api_key = getenv('EDMS_API_KEY');
+if ($__edms_api_key === FALSE || $__edms_api_key === '') {
+	$__edms_api_key = isset($_SERVER['EDMS_API_KEY']) ? $_SERVER['EDMS_API_KEY'] : '';
+}
+$config['edms_api_key'] = $__edms_api_key;

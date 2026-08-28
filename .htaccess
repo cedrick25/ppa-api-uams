@@ -1,3 +1,4 @@
+SetEnv EDMS_API_KEY "mh4SektuLPVzK9jJEs0dWMxBID3ZpcnvgT1Qol7FUi2faN8q"
 <IfModule mod_rewrite.c>
   RewriteEngine On
   #RewriteBase /wms/
