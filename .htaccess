@@ -7,5 +7,8 @@ SetEnv EDMS_API_KEY "xjn2hrZzTSK8kHwCENXVOcWeBdoRYms7FDJIiaPM4pbQGUtg"
   #RewriteRule ^ index.php [QSA,L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteRule ^(.*)$ index.php/$1 [L]
+  # Pass the request to index.php without PATH_INFO. php-cgi rejects
+  # index.php/controller ("No input file specified"). This app reads
+  # REQUEST_URI, so the original path is still available to CodeIgniter.
+  RewriteRule ^(.*)$ index.php [L,QSA]
 </IfModule>
