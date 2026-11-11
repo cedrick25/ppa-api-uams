@@ -257,4 +257,64 @@ class Api extends CI_Controller {
 		$payload = json_decode(file_get_contents('php://input'));
 		echo $this->API_model->Email($payload);
 	}
+
+	public function secondFactorStatus()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->secondFactorStatus($payload);
+	}
+
+	public function pinSet()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->pinSet($payload);
+	}
+
+	public function pinChange()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->pinChange($payload);
+	}
+
+	public function pinVerify()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->pinVerify($payload);
+	}
+
+	public function webauthnRegisterOptions()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->webauthnRegisterOptions($payload);
+	}
+
+	public function webauthnRegisterVerify()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->webauthnRegisterVerify($payload);
+	}
+
+	public function webauthnLoginOptions()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->webauthnLoginOptions($payload);
+	}
+
+	public function webauthnLoginVerify()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->webauthnLoginVerify($payload);
+	}
+
+	public function faceRegister()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->faceRegister($payload);
+	}
+
+	public function faceVerify()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->faceVerify($payload);
+	}
 }

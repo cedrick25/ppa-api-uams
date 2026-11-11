@@ -309,36 +309,7 @@
 			header('Access-Control-Allow-Origin: *');
 	    	header("Access-Control-Allow-Methods: GET, POST");
 
-	    	$referer = "";
-	    	if(isset($_SERVER['HTTP_REFERER'])){
-	    		$referer = parse_url($_SERVER['HTTP_REFERER']);
-				$referer = isset($referer['host']) ? strtolower($referer['host']) : '';
-	    	}
-
-	    	$allowed_referers = array(
-	    		'rpxy.probation.gov.ph',
-	    		'uams.probation.gov.ph',
-	    		'192.168.1.183',
-	    		'192.168.1.147',
-	    		'192.168.1.36',
-	    		'192.168.1.33',
-	    		'192.168.1.38',
-	    		'192.168.1.35',
-	    		'192.168.100.3',
-	    		'192.168.100.14',
-	    		'192.168.10.199',
-	    		'192.168.100.4',
-	    		'192.168.254.115',
-	    		'192.168.1.219',
-	    		'127.0.0.1',
-	    		'localhost',
-	    		'ks',
-	    		'202.90.136.122',
-	    		'192.168.0.109',
-	    	);
-	    	$allow_probation_domain = ($referer !== '' && substr($referer, -strlen('.probation.gov.ph')) === '.probation.gov.ph');
-	    	
-	    	if($referer === '' || (!in_array($referer, $allowed_referers, TRUE) && !$allow_probation_domain)){
+	    	if(!$this->loginRefererAllowed()){
 			    die('Unauthorized access');
 			}
 	    	
@@ -375,6 +346,8 @@
 						return json_encode($response);
 					}
 
+						$sfToken = $this->issueSecondFactorToken($user->USER_ID);
+
 						$response = array('status' => 'SUCCESS',
 										 'message' => 'LOGIN SUCCESS',
 										 'payload' => array("USER_ID"=>$user->USER_ID,
@@ -385,7 +358,8 @@
 										 					"USER_FULLNAME" => $user->USER_FNAME." ".$user->USER_LNAME,
 										 					"FIELD_OFFICE" => $user->FIELD_OFFICE,
 										 					"USER_CONTACT" => $user->USER_CONTACT,
-										 					"HASH" => base64_encode($user->USER_EMAIL).".".base64_encode($payload->PASSWORD)
+										 					"HASH" => base64_encode($user->USER_EMAIL).".".base64_encode($payload->PASSWORD),
+										 					"SECOND_FACTOR_TOKEN" => $sfToken
 
 										 				)
 										 		
@@ -2000,6 +1974,579 @@
 			}
 			return json_encode($response);
 	    }
+
+		private function loginRefererAllowed(){
+			$referer = "";
+			if(isset($_SERVER['HTTP_REFERER'])){
+				$parts = parse_url($_SERVER['HTTP_REFERER']);
+				$referer = isset($parts['host']) ? strtolower($parts['host']) : '';
+			}
+
+			$allowed_referers = array(
+				'rpxy.probation.gov.ph',
+				'uams.probation.gov.ph',
+				'192.168.1.183',
+				'192.168.1.147',
+				'192.168.1.36',
+				'192.168.1.33',
+				'192.168.1.38',
+				'192.168.1.35',
+				'192.168.100.3',
+				'192.168.100.14',
+				'192.168.10.199',
+				'192.168.100.4',
+				'192.168.254.115',
+				'192.168.1.219',
+				'127.0.0.1',
+				'localhost',
+				'ks',
+				'202.90.136.122',
+				'192.168.0.109',
+			);
+			$allow_probation_domain = ($referer !== '' && substr($referer, -strlen('.probation.gov.ph')) === '.probation.gov.ph');
+			if($referer === '' || (!in_array($referer, $allowed_referers, TRUE) && !$allow_probation_domain)){
+				return false;
+			}
+			return true;
+		}
+
+		private function ensureSecondFactorTables(){
+			$this->db->query("CREATE TABLE IF NOT EXISTS USER_2FA_SESSION (
+				TOKEN VARCHAR(64) NOT NULL,
+				USER_ID INT NOT NULL,
+				EXPIRES_AT DATETIME NOT NULL,
+				CREATED_AT DATETIME NOT NULL,
+				PRIMARY KEY (TOKEN),
+				KEY USER_ID (USER_ID)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+
+			$this->db->query("CREATE TABLE IF NOT EXISTS USER_PIN (
+				USER_ID INT NOT NULL,
+				PIN_HASH VARCHAR(255) NOT NULL,
+				UPDATED_AT DATETIME NOT NULL,
+				PRIMARY KEY (USER_ID)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+
+			$this->db->query("CREATE TABLE IF NOT EXISTS USER_WEBAUTHN (
+				ID INT NOT NULL AUTO_INCREMENT,
+				USER_ID INT NOT NULL,
+				METHOD VARCHAR(32) NOT NULL,
+				CREDENTIAL_ID VARCHAR(255) NOT NULL,
+				PUBLIC_KEY TEXT NOT NULL,
+				ALG INT NOT NULL,
+				SIGN_COUNT INT NOT NULL DEFAULT 0,
+				DEVICE_LABEL VARCHAR(255) DEFAULT NULL,
+				CREATED_AT DATETIME NOT NULL,
+				PRIMARY KEY (ID),
+				UNIQUE KEY CREDENTIAL_ID (CREDENTIAL_ID),
+				KEY USER_METHOD (USER_ID, METHOD)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+
+			$this->db->query("CREATE TABLE IF NOT EXISTS USER_FACE (
+				USER_ID INT NOT NULL,
+				METHOD VARCHAR(32) NOT NULL,
+				EMBEDDING TEXT NOT NULL,
+				DEVICE_LABEL VARCHAR(255) DEFAULT NULL,
+				UPDATED_AT DATETIME NOT NULL,
+				PRIMARY KEY (USER_ID, METHOD)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+
+			$this->db->query("CREATE TABLE IF NOT EXISTS USER_WEBAUTHN_CHALLENGE (
+				ID INT NOT NULL AUTO_INCREMENT,
+				USER_ID INT NOT NULL,
+				CHALLENGE VARCHAR(128) NOT NULL,
+				PURPOSE VARCHAR(20) NOT NULL,
+				METHOD VARCHAR(32) NOT NULL,
+				EXPIRES_AT DATETIME NOT NULL,
+				PRIMARY KEY (ID),
+				KEY USER_PURPOSE (USER_ID, PURPOSE)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+		}
+
+		private function issueSecondFactorToken($userId){
+			$this->ensureSecondFactorTables();
+			$token = bin2hex(openssl_random_pseudo_bytes(32));
+			$this->db->where('USER_ID', $userId);
+			$this->db->delete('USER_2FA_SESSION');
+			$this->db->insert('USER_2FA_SESSION', array(
+				'TOKEN' => $token,
+				'USER_ID' => $userId,
+				'EXPIRES_AT' => date('Y-m-d H:i:s', time() + 600),
+				'CREATED_AT' => date('Y-m-d H:i:s')
+			));
+			return $token;
+		}
+
+		private function secondFactorFail($message){
+			return json_encode(array('status' => 'FAILED', 'message' => $message));
+		}
+
+		private function secondFactorSession($payload){
+			if(!$this->loginRefererAllowed()){
+				return array(null, $this->secondFactorFail('Unauthorized access'));
+			}
+			if(!isset($payload->TOKEN) || $payload->TOKEN === ''){
+				return array(null, $this->secondFactorFail('Second factor session is missing.'));
+			}
+			$this->ensureSecondFactorTables();
+			$this->db->where('TOKEN', $payload->TOKEN);
+			$this->db->where('EXPIRES_AT >=', date('Y-m-d H:i:s'));
+			$query = $this->db->get('USER_2FA_SESSION');
+			if(!$query || $query->num_rows() < 1){
+				return array(null, $this->secondFactorFail('Second factor session expired. Sign in again.'));
+			}
+			$session = $query->row();
+			$this->db->where('USER_ID', $session->USER_ID);
+			$userQuery = $this->db->get('USERS');
+			if(!$userQuery || $userQuery->num_rows() < 1){
+				return array(null, $this->secondFactorFail('User was not found.'));
+			}
+			return array($userQuery->row(), null);
+		}
+
+		private function consumeSecondFactorToken($token){
+			$this->db->where('TOKEN', $token);
+			$this->db->delete('USER_2FA_SESSION');
+		}
+
+		private function allowedSecondFactorMethod($method){
+			return in_array($method, array(
+				'fingerprint_builtin',
+				'fingerprint_futronic'
+			), TRUE);
+		}
+
+		private function allowedFaceMethod($method){
+			return in_array($method, array(
+				'face_builtin',
+				'face_webcam'
+			), TRUE);
+		}
+
+		private function faceVector($value){
+			if(!is_array($value) || count($value) !== 256){
+				return null;
+			}
+			$vector = array();
+			foreach($value as $number){
+				if(!is_numeric($number)){
+					return null;
+				}
+				$vector[] = (float)$number;
+			}
+			return $vector;
+		}
+
+		private function faceSimilarity($stored, $current){
+			$dot = 0.0;
+			$left = 0.0;
+			$right = 0.0;
+			$count = count($stored);
+			for($i = 0; $i < $count; $i++){
+				$dot += $stored[$i] * $current[$i];
+				$left += $stored[$i] * $stored[$i];
+				$right += $current[$i] * $current[$i];
+			}
+			if($left <= 0 || $right <= 0){
+				return 0.0;
+			}
+			return $dot / (sqrt($left) * sqrt($right));
+		}
+
+		private function webauthnLib(){
+			require_once APPPATH.'libraries/Webauthn_rp.php';
+			return new Webauthn_rp();
+		}
+
+		private function requestOrigin(){
+			if(!isset($_SERVER['HTTP_REFERER'])){
+				return array('', '');
+			}
+			$parts = parse_url($_SERVER['HTTP_REFERER']);
+			if(!isset($parts['scheme']) || !isset($parts['host'])){
+				return array('', '');
+			}
+			$origin = $parts['scheme'].'://'.$parts['host'];
+			if(isset($parts['port'])){
+				$defaultPort = ($parts['scheme'] === 'https') ? 443 : 80;
+				if((int)$parts['port'] !== $defaultPort){
+					$origin .= ':'.$parts['port'];
+				}
+			}
+			return array($origin, strtolower($parts['host']));
+		}
+
+		public function secondFactorStatus($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$pin = $this->db->get('USER_PIN');
+			$methods = array(
+				'fingerprint_builtin' => false,
+				'fingerprint_futronic' => false,
+				'face_builtin' => false,
+				'face_webcam' => false
+			);
+			$this->db->where('USER_ID', $user->USER_ID);
+			$creds = $this->db->get('USER_WEBAUTHN');
+			if($creds && $creds->num_rows() > 0){
+				foreach($creds->result() as $cred){
+					if(isset($methods[$cred->METHOD]) && strpos($cred->METHOD, 'face_') !== 0){
+						$methods[$cred->METHOD] = true;
+					}
+				}
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$faces = $this->db->get('USER_FACE');
+			if($faces && $faces->num_rows() > 0){
+				foreach($faces->result() as $face){
+					if(isset($methods[$face->METHOD])){
+						$methods[$face->METHOD] = true;
+					}
+				}
+			}
+			return json_encode(array(
+				'status' => 'SUCCESS',
+				'payload' => array(
+					'pin_set' => ($pin && $pin->num_rows() > 0),
+					'methods' => $methods
+				)
+			));
+		}
+
+		public function pinSet($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			if(!isset($payload->PIN) || !preg_match('/^[0-9]{4,8}$/', (string)$payload->PIN)){
+				return $this->secondFactorFail('PIN must be 4 to 8 digits.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$existing = $this->db->get('USER_PIN');
+			if($existing && $existing->num_rows() > 0){
+				return $this->secondFactorFail('A PIN is already set. Use change PIN.');
+			}
+			$this->db->insert('USER_PIN', array(
+				'USER_ID' => $user->USER_ID,
+				'PIN_HASH' => password_hash((string)$payload->PIN, PASSWORD_DEFAULT),
+				'UPDATED_AT' => date('Y-m-d H:i:s')
+			));
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'PIN saved'));
+		}
+
+		public function pinChange($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			if(!isset($payload->CURRENT_PIN) || !isset($payload->NEW_PIN) || !preg_match('/^[0-9]{4,8}$/', (string)$payload->NEW_PIN)){
+				return $this->secondFactorFail('Enter the current PIN and a new 4 to 8 digit PIN.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$existing = $this->db->get('USER_PIN');
+			if(!$existing || $existing->num_rows() < 1){
+				return $this->secondFactorFail('No PIN is set yet.');
+			}
+			$row = $existing->row();
+			if(!password_verify((string)$payload->CURRENT_PIN, $row->PIN_HASH)){
+				return $this->secondFactorFail('Current PIN did not match.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->update('USER_PIN', array(
+				'PIN_HASH' => password_hash((string)$payload->NEW_PIN, PASSWORD_DEFAULT),
+				'UPDATED_AT' => date('Y-m-d H:i:s')
+			));
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'PIN updated'));
+		}
+
+		public function pinVerify($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			if(!isset($payload->PIN)){
+				return $this->secondFactorFail('PIN is required.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$existing = $this->db->get('USER_PIN');
+			if(!$existing || $existing->num_rows() < 1){
+				return $this->secondFactorFail('No PIN is set yet.');
+			}
+			$row = $existing->row();
+			if(!password_verify((string)$payload->PIN, $row->PIN_HASH)){
+				return $this->secondFactorFail('Invalid PIN.');
+			}
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'PIN verified'));
+		}
+
+		public function webauthnRegisterOptions($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$method = isset($payload->METHOD) ? $payload->METHOD : '';
+			if(!$this->allowedSecondFactorMethod($method)){
+				return $this->secondFactorFail('Unknown authentication method.');
+			}
+			list($origin, $rpId) = $this->requestOrigin();
+			if($rpId === ''){
+				return $this->secondFactorFail('Unable to determine the site address.');
+			}
+			$challenge = $this->webauthnLib()->newChallenge();
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('PURPOSE', 'register');
+			$this->db->delete('USER_WEBAUTHN_CHALLENGE');
+			$this->db->insert('USER_WEBAUTHN_CHALLENGE', array(
+				'USER_ID' => $user->USER_ID,
+				'CHALLENGE' => $challenge,
+				'PURPOSE' => 'register',
+				'METHOD' => $method,
+				'EXPIRES_AT' => date('Y-m-d H:i:s', time() + 300)
+			));
+			$userHandle = hash('sha256', 'uams-user-'.$user->USER_ID, true);
+			return json_encode(array(
+				'status' => 'SUCCESS',
+				'payload' => array(
+					'challenge' => $challenge,
+					'rpId' => $rpId,
+					'rpName' => 'Unified Access Management Solution',
+					'userId' => rtrim(strtr(base64_encode($userHandle), '+/', '-_'), '='),
+					'userName' => $user->USER_EMAIL,
+					'displayName' => $user->USER_FNAME.' '.$user->USER_LNAME,
+					'origin' => $origin
+				)
+			));
+		}
+
+		public function webauthnRegisterVerify($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$method = isset($payload->METHOD) ? $payload->METHOD : '';
+			if(!$this->allowedSecondFactorMethod($method)){
+				return $this->secondFactorFail('Unknown authentication method.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('PURPOSE', 'register');
+			$this->db->where('METHOD', $method);
+			$this->db->where('EXPIRES_AT >=', date('Y-m-d H:i:s'));
+			$challengeRow = $this->db->get('USER_WEBAUTHN_CHALLENGE');
+			if(!$challengeRow || $challengeRow->num_rows() < 1){
+				return $this->secondFactorFail('Registration challenge expired. Try again.');
+			}
+			$challenge = $challengeRow->row()->CHALLENGE;
+			list($origin, $rpId) = $this->requestOrigin();
+			try {
+				$stored = $this->webauthnLib()->verifyRegistration(
+					isset($payload->clientDataJSON) ? $payload->clientDataJSON : '',
+					isset($payload->attestationObject) ? $payload->attestationObject : '',
+					$challenge,
+					$origin,
+					$rpId
+				);
+			} catch (Exception $e) {
+				return $this->secondFactorFail('Fingerprint registration was rejected.');
+			}
+			if(!isset($payload->id) || (string)$payload->id !== $stored['credentialId']){
+				return $this->secondFactorFail('Fingerprint registration was rejected.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('METHOD', $method);
+			$this->db->delete('USER_WEBAUTHN');
+			$label = isset($payload->DEVICE_LABEL) ? substr((string)$payload->DEVICE_LABEL, 0, 255) : '';
+			$this->db->insert('USER_WEBAUTHN', array(
+				'USER_ID' => $user->USER_ID,
+				'METHOD' => $method,
+				'CREDENTIAL_ID' => $stored['credentialId'],
+				'PUBLIC_KEY' => $stored['publicKey'],
+				'ALG' => $stored['alg'],
+				'SIGN_COUNT' => $stored['signCount'],
+				'DEVICE_LABEL' => $label,
+				'CREATED_AT' => date('Y-m-d H:i:s')
+			));
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('PURPOSE', 'register');
+			$this->db->delete('USER_WEBAUTHN_CHALLENGE');
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'Authenticator registered'));
+		}
+
+		public function webauthnLoginOptions($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$method = isset($payload->METHOD) ? $payload->METHOD : '';
+			if(!$this->allowedSecondFactorMethod($method)){
+				return $this->secondFactorFail('Unknown authentication method.');
+			}
+			list($origin, $rpId) = $this->requestOrigin();
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('METHOD', $method);
+			$creds = $this->db->get('USER_WEBAUTHN');
+			if(!$creds || $creds->num_rows() < 1){
+				return json_encode(array('status' => 'SETUP', 'message' => 'This method is not set up yet.'));
+			}
+			$allow = array();
+			foreach($creds->result() as $cred){
+				$allow[] = $cred->CREDENTIAL_ID;
+			}
+			$challenge = $this->webauthnLib()->newChallenge();
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('PURPOSE', 'login');
+			$this->db->delete('USER_WEBAUTHN_CHALLENGE');
+			$this->db->insert('USER_WEBAUTHN_CHALLENGE', array(
+				'USER_ID' => $user->USER_ID,
+				'CHALLENGE' => $challenge,
+				'PURPOSE' => 'login',
+				'METHOD' => $method,
+				'EXPIRES_AT' => date('Y-m-d H:i:s', time() + 300)
+			));
+			return json_encode(array(
+				'status' => 'SUCCESS',
+				'payload' => array(
+					'challenge' => $challenge,
+					'rpId' => $rpId,
+					'allowCredentials' => $allow,
+					'origin' => $origin
+				)
+			));
+		}
+
+		public function webauthnLoginVerify($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$method = isset($payload->METHOD) ? $payload->METHOD : '';
+			if(!$this->allowedSecondFactorMethod($method)){
+				return $this->secondFactorFail('Unknown authentication method.');
+			}
+			$credentialId = isset($payload->id) ? (string)$payload->id : '';
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('METHOD', $method);
+			$credQuery = $this->db->get('USER_WEBAUTHN');
+			$cred = null;
+			$wanted = rtrim(strtr($credentialId, '+/', '-_'), '=');
+			if($credQuery && $credQuery->num_rows() > 0){
+				foreach($credQuery->result() as $row){
+					$storedId = rtrim(strtr($row->CREDENTIAL_ID, '+/', '-_'), '=');
+					if($storedId === $wanted){
+						$cred = $row;
+						break;
+					}
+				}
+			}
+			if($cred === null){
+				return $this->secondFactorFail('This authenticator is not registered for your account.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('PURPOSE', 'login');
+			$this->db->where('METHOD', $method);
+			$this->db->where('EXPIRES_AT >=', date('Y-m-d H:i:s'));
+			$challengeRow = $this->db->get('USER_WEBAUTHN_CHALLENGE');
+			if(!$challengeRow || $challengeRow->num_rows() < 1){
+				return $this->secondFactorFail('Sign-in challenge expired. Try again.');
+			}
+			$challenge = $challengeRow->row()->CHALLENGE;
+			list($origin, $rpId) = $this->requestOrigin();
+			try {
+				$signCount = $this->webauthnLib()->verifyAssertion(
+					isset($payload->clientDataJSON) ? $payload->clientDataJSON : '',
+					isset($payload->authenticatorData) ? $payload->authenticatorData : '',
+					isset($payload->signature) ? $payload->signature : '',
+					$challenge,
+					$origin,
+					$rpId,
+					$cred->PUBLIC_KEY,
+					(int)$cred->ALG,
+					(int)$cred->SIGN_COUNT
+				);
+			} catch (Exception $e) {
+				return $this->secondFactorFail('Fingerprint verification failed ('.$e->getMessage().').');
+			}
+			$this->db->where('ID', $cred->ID);
+			$this->db->update('USER_WEBAUTHN', array('SIGN_COUNT' => $signCount));
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('PURPOSE', 'login');
+			$this->db->delete('USER_WEBAUTHN_CHALLENGE');
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'Authenticator verified'));
+		}
+
+		public function faceRegister($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$method = isset($payload->METHOD) ? $payload->METHOD : '';
+			if(!$this->allowedFaceMethod($method)){
+				return $this->secondFactorFail('Unknown camera.');
+			}
+			$vector = $this->faceVector(isset($payload->EMBEDDING) ? $payload->EMBEDDING : null);
+			if($vector === null){
+				return $this->secondFactorFail('No face was found. Look at the camera and try again.');
+			}
+			$label = isset($payload->DEVICE_LABEL) ? substr((string)$payload->DEVICE_LABEL, 0, 255) : '';
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('METHOD', $method);
+			$this->db->delete('USER_FACE');
+			$this->db->insert('USER_FACE', array(
+				'USER_ID' => $user->USER_ID,
+				'METHOD' => $method,
+				'EMBEDDING' => json_encode($vector),
+				'DEVICE_LABEL' => $label,
+				'UPDATED_AT' => date('Y-m-d H:i:s')
+			));
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'Face ID saved'));
+		}
+
+		public function faceVerify($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$method = isset($payload->METHOD) ? $payload->METHOD : '';
+			if(!$this->allowedFaceMethod($method)){
+				return $this->secondFactorFail('Unknown camera.');
+			}
+			$vector = $this->faceVector(isset($payload->EMBEDDING) ? $payload->EMBEDDING : null);
+			if($vector === null){
+				return $this->secondFactorFail('No face was found. Look at the camera and try again.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->where('METHOD', $method);
+			$existing = $this->db->get('USER_FACE');
+			if(!$existing || $existing->num_rows() < 1){
+				return $this->secondFactorFail('Face ID is not set up for this camera.');
+			}
+			$stored = json_decode($existing->row()->EMBEDDING, true);
+			if(!is_array($stored) || count($stored) !== 256){
+				return $this->secondFactorFail('Saved Face ID could not be read. Set it up again.');
+			}
+			if($this->faceSimilarity($stored, $vector) < 0.82){
+				return $this->secondFactorFail('Face did not match. Look at the same camera, or use SMS OTP.');
+			}
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'Face ID verified'));
+		}
 
 	}
 
