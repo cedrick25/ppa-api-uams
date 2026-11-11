@@ -2541,8 +2541,19 @@
 			if(!is_array($stored) || count($stored) !== 256){
 				return $this->secondFactorFail('Saved Face ID could not be read. Set it up again.');
 			}
-			if($this->faceSimilarity($stored, $vector) < 0.82){
-				return $this->secondFactorFail('Face did not match. Look at the same camera, or use SMS OTP.');
+			$score = $this->faceSimilarity($stored, $vector);
+			if($score < 0.82){
+				$mismatch = array();
+				$count = count($stored);
+				for($i = 0; $i < $count; $i++){
+					$mismatch[] = round(abs($stored[$i] - $vector[$i]), 5);
+				}
+				return json_encode(array(
+					'status' => 'FAILED',
+					'message' => 'Face did not match. Red areas differ from the saved Face ID. Adjust your face inside the guide.',
+					'similarity' => round($score, 3),
+					'mismatch' => $mismatch
+				));
 			}
 			$this->consumeSecondFactorToken($payload->TOKEN);
 			return json_encode(array('status' => 'SUCCESS', 'message' => 'Face ID verified'));
