@@ -2066,6 +2066,20 @@
 				PRIMARY KEY (ID),
 				KEY USER_PURPOSE (USER_ID, PURPOSE)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+
+			$this->db->query("CREATE TABLE IF NOT EXISTS USER_FUTRONIC (
+				USER_ID INT NOT NULL,
+				TEMPLATE TEXT NOT NULL,
+				TEMPLATE_SHA CHAR(64) NOT NULL,
+				FINGER TINYINT NOT NULL DEFAULT 0,
+				UPDATED_AT DATETIME NOT NULL,
+				PRIMARY KEY (USER_ID)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+
+			$futronicAttempts = $this->db->query("SHOW COLUMNS FROM USER_2FA_SESSION LIKE 'FUTRONIC_ATTEMPTS'");
+			if(!$futronicAttempts || $futronicAttempts->num_rows() < 1){
+				$this->db->query("ALTER TABLE USER_2FA_SESSION ADD FUTRONIC_ATTEMPTS INT NOT NULL DEFAULT 0");
+			}
 		}
 
 		private function issueSecondFactorToken($userId){
@@ -2115,10 +2129,7 @@
 		}
 
 		private function allowedSecondFactorMethod($method){
-			return in_array($method, array(
-				'fingerprint_builtin',
-				'fingerprint_futronic'
-			), TRUE);
+			return $method === 'fingerprint_builtin';
 		}
 
 		private function allowedFaceMethod($method){
@@ -2266,10 +2277,15 @@
 			$creds = $this->db->get('USER_WEBAUTHN');
 			if($creds && $creds->num_rows() > 0){
 				foreach($creds->result() as $cred){
-					if(isset($methods[$cred->METHOD]) && strpos($cred->METHOD, 'face_') !== 0){
+					if(isset($methods[$cred->METHOD]) && $cred->METHOD !== 'fingerprint_futronic'){
 						$methods[$cred->METHOD] = true;
 					}
 				}
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$futronic = $this->db->get('USER_FUTRONIC');
+			if($futronic && $futronic->num_rows() > 0){
+				$methods['fingerprint_futronic'] = true;
 			}
 			$this->db->where('USER_ID', $user->USER_ID);
 			$faces = $this->db->get('USER_FACE');
@@ -2658,6 +2674,251 @@
 			}
 			$this->consumeSecondFactorToken($payload->TOKEN);
 			return json_encode(array('status' => 'SUCCESS', 'message' => 'Face ID verified'));
+		}
+
+		private function futronicSettings(){
+			$this->config->load('futronic', TRUE);
+			$secret = trim((string)$this->config->item('hmac_secret', 'futronic'));
+			$key = trim((string)$this->config->item('template_key', 'futronic'));
+			if(strlen($secret) < 16 || strlen($key) < 16){
+				return null;
+			}
+			return array('secret' => $secret, 'key' => $key);
+		}
+
+		private function futronicTemplateBytes($value){
+			$raw = base64_decode((string)$value, true);
+			if($raw === false || strlen($raw) < 32 || strlen($raw) > 65536){
+				return null;
+			}
+			return $raw;
+		}
+
+		private function futronicEncrypt($plain, $keyMaterial){
+			$key = hash('sha256', $keyMaterial, true);
+			$iv = openssl_random_pseudo_bytes(12);
+			$tag = '';
+			$cipher = openssl_encrypt($plain, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+			if($cipher === false || strlen($tag) !== 16){
+				return null;
+			}
+			return base64_encode($iv.$tag.$cipher);
+		}
+
+		private function futronicDecrypt($stored, $keyMaterial){
+			$raw = base64_decode((string)$stored, true);
+			if($raw === false || strlen($raw) < 29){
+				return null;
+			}
+			$iv = substr($raw, 0, 12);
+			$tag = substr($raw, 12, 16);
+			$cipher = substr($raw, 28);
+			$key = hash('sha256', $keyMaterial, true);
+			$plain = openssl_decrypt($cipher, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+			if($plain === false){
+				return null;
+			}
+			return $plain;
+		}
+
+		private function futronicMac($secret, $payload){
+			return hash_hmac('sha256', $payload, $secret);
+		}
+
+		private function futronicMacOk($secret, $payload, $presented){
+			$presented = strtolower(trim((string)$presented));
+			if(strlen($presented) !== 64){
+				return false;
+			}
+			return hash_equals($this->futronicMac($secret, $payload), $presented);
+		}
+
+		private function readFutronicAttempts($token){
+			$this->db->where('TOKEN', $token);
+			$query = $this->db->get('USER_2FA_SESSION');
+			if(!$query || $query->num_rows() < 1){
+				return null;
+			}
+			$row = $query->row();
+			return isset($row->FUTRONIC_ATTEMPTS) ? (int)$row->FUTRONIC_ATTEMPTS : 0;
+		}
+
+		private function recordFutronicFailure($token){
+			$attempts = (int)$this->readFutronicAttempts($token);
+			$attempts++;
+			$this->db->where('TOKEN', $token);
+			$this->db->update('USER_2FA_SESSION', array('FUTRONIC_ATTEMPTS' => $attempts));
+			return $attempts;
+		}
+
+		private function futronicLockedResponse(){
+			return json_encode(array(
+				'status' => 'FAILED',
+				'locked' => true,
+				'message' => 'Futronic sign-in is paused after 5 tries. Use SMS OTP or your PIN.'
+			));
+		}
+
+		private function futronicChallenge($userId, $purpose){
+			$challenge = bin2hex(openssl_random_pseudo_bytes(32));
+			$this->db->where('USER_ID', $userId);
+			$this->db->where('METHOD', 'fingerprint_futronic');
+			$this->db->delete('USER_WEBAUTHN_CHALLENGE');
+			$this->db->insert('USER_WEBAUTHN_CHALLENGE', array(
+				'USER_ID' => $userId,
+				'CHALLENGE' => $challenge,
+				'PURPOSE' => $purpose,
+				'METHOD' => 'fingerprint_futronic',
+				'EXPIRES_AT' => date('Y-m-d H:i:s', time() + 120)
+			));
+			return $challenge;
+		}
+
+		private function takeFutronicChallenge($userId, $purpose, $challenge){
+			$this->db->where('USER_ID', $userId);
+			$this->db->where('METHOD', 'fingerprint_futronic');
+			$this->db->where('PURPOSE', $purpose);
+			$this->db->where('EXPIRES_AT >=', date('Y-m-d H:i:s'));
+			$query = $this->db->get('USER_WEBAUTHN_CHALLENGE');
+			if(!$query || $query->num_rows() < 1){
+				return false;
+			}
+			$row = $query->row();
+			$this->db->where('USER_ID', $userId);
+			$this->db->where('METHOD', 'fingerprint_futronic');
+			$this->db->delete('USER_WEBAUTHN_CHALLENGE');
+			$stored = (string)$row->CHALLENGE;
+			$given = (string)$challenge;
+			if(strlen($stored) !== strlen($given)){
+				return false;
+			}
+			return hash_equals($stored, $given);
+		}
+
+		public function futronicOptions($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$settings = $this->futronicSettings();
+			if($settings === null){
+				return $this->secondFactorFail('Futronic signing is not configured on the server.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$existing = $this->db->get('USER_FUTRONIC');
+			$enrolled = ($existing && $existing->num_rows() > 0) ? $existing->row() : null;
+			$attempts = $this->readFutronicAttempts($payload->TOKEN);
+			if($attempts === null){
+				return $this->secondFactorFail('Second factor session expired. Sign in again.');
+			}
+			if($enrolled !== null && $attempts >= 5){
+				return $this->futronicLockedResponse();
+			}
+			$template = null;
+			if($enrolled !== null){
+				$plain = $this->futronicDecrypt($enrolled->TEMPLATE, $settings['key']);
+				if($plain === null || hash('sha256', $plain) !== $enrolled->TEMPLATE_SHA){
+					$this->db->where('USER_ID', $user->USER_ID);
+					$this->db->delete('USER_FUTRONIC');
+					$enrolled = null;
+				}else{
+					$template = base64_encode($plain);
+				}
+			}
+			$purpose = $enrolled === null ? 'enroll' : 'login';
+			$body = array(
+				'purpose' => $purpose,
+				'challenge' => $this->futronicChallenge($user->USER_ID, $purpose)
+			);
+			if($template !== null){
+				$body['template'] = $template;
+			}
+			return json_encode(array('status' => 'SUCCESS', 'payload' => $body));
+		}
+
+		public function futronicEnroll($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$settings = $this->futronicSettings();
+			if($settings === null){
+				return $this->secondFactorFail('Futronic signing is not configured on the server.');
+			}
+			$template = $this->futronicTemplateBytes(isset($payload->template) ? $payload->template : '');
+			if($template === null){
+				return $this->secondFactorFail('The Futronic scan could not be read. Place your finger again.');
+			}
+			$challenge = isset($payload->challenge) ? (string)$payload->challenge : '';
+			$macPayload = $challenge.'|enroll|'.hash('sha256', $template);
+			if(!$this->takeFutronicChallenge($user->USER_ID, 'enroll', $challenge) || !$this->futronicMacOk($settings['secret'], $macPayload, isset($payload->mac) ? $payload->mac : '')){
+				return $this->secondFactorFail('Futronic enrollment was rejected. Start the scan again.');
+			}
+			$stored = $this->futronicEncrypt($template, $settings['key']);
+			if($stored === null){
+				return $this->secondFactorFail('The Futronic fingerprint could not be saved.');
+			}
+			$finger = isset($payload->finger) ? (int)$payload->finger : 0;
+			if($finger < 0 || $finger > 10){
+				$finger = 0;
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$this->db->delete('USER_FUTRONIC');
+			$this->db->insert('USER_FUTRONIC', array(
+				'USER_ID' => $user->USER_ID,
+				'TEMPLATE' => $stored,
+				'TEMPLATE_SHA' => hash('sha256', $template),
+				'FINGER' => $finger,
+				'UPDATED_AT' => date('Y-m-d H:i:s')
+			));
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'Futronic fingerprint saved'));
+		}
+
+		public function futronicVerify($payload){
+			header('Content-Type: application/json');
+			list($user, $error) = $this->secondFactorSession($payload);
+			if($error !== null){
+				return $error;
+			}
+			$settings = $this->futronicSettings();
+			if($settings === null){
+				return $this->secondFactorFail('Futronic signing is not configured on the server.');
+			}
+			$attempts = $this->readFutronicAttempts($payload->TOKEN);
+			if($attempts === null){
+				return $this->secondFactorFail('Second factor session expired. Sign in again.');
+			}
+			if($attempts >= 5){
+				return $this->futronicLockedResponse();
+			}
+			if(!isset($payload->match) || !is_bool($payload->match)){
+				return $this->secondFactorFail('The Futronic scan could not be read. Place your finger again.');
+			}
+			$this->db->where('USER_ID', $user->USER_ID);
+			$existing = $this->db->get('USER_FUTRONIC');
+			if(!$existing || $existing->num_rows() < 1){
+				return $this->secondFactorFail('Futronic fingerprint is not set up yet.');
+			}
+			$row = $existing->row();
+			$challenge = isset($payload->challenge) ? (string)$payload->challenge : '';
+			$macPayload = $challenge.'|login|'.($payload->match ? '1' : '0').'|'.$row->TEMPLATE_SHA;
+			$challengeOk = $this->takeFutronicChallenge($user->USER_ID, 'login', $challenge);
+			$macOk = $this->futronicMacOk($settings['secret'], $macPayload, isset($payload->mac) ? $payload->mac : '');
+			if(!$challengeOk || !$macOk || $payload->match !== true){
+				$attempts = $this->recordFutronicFailure($payload->TOKEN);
+				if($attempts >= 5){
+					return $this->futronicLockedResponse();
+				}
+				if(!$challengeOk || !$macOk){
+					return $this->secondFactorFail('Futronic sign-in was rejected. Place your finger again.');
+				}
+				return $this->secondFactorFail('Fingerprint did not match. Place the enrolled finger on the Futronic scanner, or use SMS OTP or your PIN.');
+			}
+			$this->consumeSecondFactorToken($payload->TOKEN);
+			return json_encode(array('status' => 'SUCCESS', 'message' => 'Futronic fingerprint verified'));
 		}
 
 	}

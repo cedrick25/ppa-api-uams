@@ -317,4 +317,22 @@ class Api extends CI_Controller {
 		$payload = json_decode(file_get_contents('php://input'));
 		echo $this->API_model->faceVerify($payload);
 	}
+
+	public function futronicOptions()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->futronicOptions($payload);
+	}
+
+	public function futronicEnroll()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->futronicEnroll($payload);
+	}
+
+	public function futronicVerify()
+	{
+		$payload = json_decode(file_get_contents('php://input'));
+		echo $this->API_model->futronicVerify($payload);
+	}
 }
