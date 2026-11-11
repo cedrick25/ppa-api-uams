@@ -2016,9 +2016,14 @@
 				USER_ID INT NOT NULL,
 				EXPIRES_AT DATETIME NOT NULL,
 				CREATED_AT DATETIME NOT NULL,
+				FACE_ATTEMPTS INT NOT NULL DEFAULT 0,
 				PRIMARY KEY (TOKEN),
 				KEY USER_ID (USER_ID)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+			$faceAttempts = $this->db->query("SHOW COLUMNS FROM USER_2FA_SESSION LIKE 'FACE_ATTEMPTS'");
+			if(!$faceAttempts || $faceAttempts->num_rows() < 1){
+				$this->db->query("ALTER TABLE USER_2FA_SESSION ADD FACE_ATTEMPTS INT NOT NULL DEFAULT 0");
+			}
 
 			$this->db->query("CREATE TABLE IF NOT EXISTS USER_PIN (
 				USER_ID INT NOT NULL,
@@ -2151,6 +2156,73 @@
 				return 0.0;
 			}
 			return $dot / (sqrt($left) * sqrt($right));
+		}
+
+		private function faceSampleList($value, $expected){
+			if(!is_array($value) || count($value) !== $expected || !isset($value[0]) || !is_array($value[0])){
+				return null;
+			}
+			$samples = array();
+			foreach($value as $item){
+				$vector = $this->faceVector($item);
+				if($vector === null){
+					return null;
+				}
+				$samples[] = $vector;
+			}
+			return $samples;
+		}
+
+		private function storedFaceSamples($raw){
+			$decoded = json_decode($raw, true);
+			if(!is_array($decoded)){
+				return null;
+			}
+			if(isset($decoded['samples']) && is_array($decoded['samples'])){
+				$decoded = $decoded['samples'];
+			}
+			if(isset($decoded[0]) && is_numeric($decoded[0])){
+				$vector = $this->faceVector($decoded);
+				return $vector === null ? null : array($vector);
+			}
+			if(!isset($decoded[0]) || !is_array($decoded[0])){
+				return null;
+			}
+			$samples = array();
+			foreach($decoded as $item){
+				$vector = $this->faceVector($item);
+				if($vector === null){
+					return null;
+				}
+				$samples[] = $vector;
+			}
+			return count($samples) > 0 ? $samples : null;
+		}
+
+		private function readFaceAttempts($token){
+			$this->db->where('TOKEN', $token);
+			$query = $this->db->get('USER_2FA_SESSION');
+			if(!$query || $query->num_rows() < 1){
+				return null;
+			}
+			$row = $query->row();
+			return isset($row->FACE_ATTEMPTS) ? (int)$row->FACE_ATTEMPTS : 0;
+		}
+
+		private function recordFaceFailure($token){
+			$attempts = (int)$this->readFaceAttempts($token);
+			$attempts++;
+			$this->db->where('TOKEN', $token);
+			$this->db->update('USER_2FA_SESSION', array('FACE_ATTEMPTS' => $attempts));
+			return $attempts;
+		}
+
+		private function faceLockedResponse(){
+			return json_encode(array(
+				'status' => 'FAILED',
+				'locked' => true,
+				'message' => 'Face ID is paused after 5 tries. Use SMS OTP or your PIN.'
+			));
 		}
 
 		private function webauthnLib(){
@@ -2498,9 +2570,16 @@
 			if(!$this->allowedFaceMethod($method)){
 				return $this->secondFactorFail('Unknown camera.');
 			}
-			$vector = $this->faceVector(isset($payload->EMBEDDING) ? $payload->EMBEDDING : null);
-			if($vector === null){
+			$samples = $this->faceSampleList(isset($payload->EMBEDDING) ? $payload->EMBEDDING : null, 3);
+			if($samples === null){
 				return $this->secondFactorFail('No face was found. Look at the camera and try again.');
+			}
+			for($i = 0; $i < count($samples); $i++){
+				for($j = $i + 1; $j < count($samples); $j++){
+					if($this->faceSimilarity($samples[$i], $samples[$j]) < 0.78){
+						return $this->secondFactorFail('Those samples did not look like the same still face. Hold still in steady light and save Face ID again.');
+					}
+				}
 			}
 			$label = isset($payload->DEVICE_LABEL) ? substr((string)$payload->DEVICE_LABEL, 0, 255) : '';
 			$this->db->where('USER_ID', $user->USER_ID);
@@ -2509,7 +2588,7 @@
 			$this->db->insert('USER_FACE', array(
 				'USER_ID' => $user->USER_ID,
 				'METHOD' => $method,
-				'EMBEDDING' => json_encode($vector),
+				'EMBEDDING' => json_encode(array('samples' => $samples)),
 				'DEVICE_LABEL' => $label,
 				'UPDATED_AT' => date('Y-m-d H:i:s')
 			));
@@ -2527,8 +2606,19 @@
 			if(!$this->allowedFaceMethod($method)){
 				return $this->secondFactorFail('Unknown camera.');
 			}
+			$attempts = $this->readFaceAttempts($payload->TOKEN);
+			if($attempts === null){
+				return $this->secondFactorFail('Second factor session expired. Sign in again.');
+			}
+			if($attempts >= 5){
+				return $this->faceLockedResponse();
+			}
 			$vector = $this->faceVector(isset($payload->EMBEDDING) ? $payload->EMBEDDING : null);
 			if($vector === null){
+				$attempts = $this->recordFaceFailure($payload->TOKEN);
+				if($attempts >= 5){
+					return $this->faceLockedResponse();
+				}
 				return $this->secondFactorFail('No face was found. Look at the camera and try again.');
 			}
 			$this->db->where('USER_ID', $user->USER_ID);
@@ -2537,21 +2627,32 @@
 			if(!$existing || $existing->num_rows() < 1){
 				return $this->secondFactorFail('Face ID is not set up for this camera.');
 			}
-			$stored = json_decode($existing->row()->EMBEDDING, true);
-			if(!is_array($stored) || count($stored) !== 256){
+			$storedSamples = $this->storedFaceSamples($existing->row()->EMBEDDING);
+			if($storedSamples === null){
 				return $this->secondFactorFail('Saved Face ID could not be read. Set it up again.');
 			}
-			$score = $this->faceSimilarity($stored, $vector);
+			$score = 0.0;
+			$closest = $storedSamples[0];
+			foreach($storedSamples as $stored){
+				$candidate = $this->faceSimilarity($stored, $vector);
+				if($candidate > $score){
+					$score = $candidate;
+					$closest = $stored;
+				}
+			}
 			if($score < 0.82){
+				$attempts = $this->recordFaceFailure($payload->TOKEN);
+				if($attempts >= 5){
+					return $this->faceLockedResponse();
+				}
 				$mismatch = array();
-				$count = count($stored);
+				$count = count($closest);
 				for($i = 0; $i < $count; $i++){
-					$mismatch[] = round(abs($stored[$i] - $vector[$i]), 5);
+					$mismatch[] = round(abs($closest[$i] - $vector[$i]), 5);
 				}
 				return json_encode(array(
 					'status' => 'FAILED',
-					'message' => 'Face did not match. Red areas differ from the saved Face ID. Adjust your face inside the guide.',
-					'similarity' => round($score, 3),
+					'message' => 'Face did not match. Adjust your position in the guide, or use SMS OTP or your PIN.',
 					'mismatch' => $mismatch
 				));
 			}
