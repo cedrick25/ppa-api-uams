@@ -1985,6 +1985,7 @@
 			$allowed_referers = array(
 				'rpxy.probation.gov.ph',
 				'uams.probation.gov.ph',
+				'uams.enterpsys.com',
 				'192.168.1.183',
 				'192.168.1.147',
 				'192.168.1.36',
@@ -2028,9 +2029,14 @@
 			$this->db->query("CREATE TABLE IF NOT EXISTS USER_PIN (
 				USER_ID INT NOT NULL,
 				PIN_HASH VARCHAR(255) NOT NULL,
+				PIN_LENGTH TINYINT NOT NULL DEFAULT 0,
 				UPDATED_AT DATETIME NOT NULL,
 				PRIMARY KEY (USER_ID)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8");
+			$pinLength = $this->db->query("SHOW COLUMNS FROM USER_PIN LIKE 'PIN_LENGTH'");
+			if(!$pinLength || $pinLength->num_rows() < 1){
+				$this->db->query("ALTER TABLE USER_PIN ADD PIN_LENGTH TINYINT NOT NULL DEFAULT 0");
+			}
 
 			$this->db->query("CREATE TABLE IF NOT EXISTS USER_WEBAUTHN (
 				ID INT NOT NULL AUTO_INCREMENT,
@@ -2296,10 +2302,15 @@
 					}
 				}
 			}
+			$pinLength = 0;
+			if($pin && $pin->num_rows() > 0 && isset($pin->row()->PIN_LENGTH)){
+				$pinLength = (int) $pin->row()->PIN_LENGTH;
+			}
 			return json_encode(array(
 				'status' => 'SUCCESS',
 				'payload' => array(
 					'pin_set' => ($pin && $pin->num_rows() > 0),
+					'pin_length' => $pinLength,
 					'methods' => $methods
 				)
 			));
@@ -2311,8 +2322,8 @@
 			if($error !== null){
 				return $error;
 			}
-			if(!isset($payload->PIN) || !preg_match('/^[0-9]{4,8}$/', (string)$payload->PIN)){
-				return $this->secondFactorFail('PIN must be 4 to 8 digits.');
+			if(!isset($payload->PIN) || !preg_match('/^[0-9]{4}$/', (string)$payload->PIN)){
+				return $this->secondFactorFail('PIN must be 4 digits.');
 			}
 			$this->db->where('USER_ID', $user->USER_ID);
 			$existing = $this->db->get('USER_PIN');
@@ -2322,6 +2333,7 @@
 			$this->db->insert('USER_PIN', array(
 				'USER_ID' => $user->USER_ID,
 				'PIN_HASH' => password_hash((string)$payload->PIN, PASSWORD_DEFAULT),
+				'PIN_LENGTH' => strlen((string)$payload->PIN),
 				'UPDATED_AT' => date('Y-m-d H:i:s')
 			));
 			$this->consumeSecondFactorToken($payload->TOKEN);
@@ -2334,8 +2346,8 @@
 			if($error !== null){
 				return $error;
 			}
-			if(!isset($payload->CURRENT_PIN) || !isset($payload->NEW_PIN) || !preg_match('/^[0-9]{4,8}$/', (string)$payload->NEW_PIN)){
-				return $this->secondFactorFail('Enter the current PIN and a new 4 to 8 digit PIN.');
+			if(!isset($payload->CURRENT_PIN) || !isset($payload->NEW_PIN) || !preg_match('/^[0-9]{4}$/', (string)$payload->CURRENT_PIN) || !preg_match('/^[0-9]{4}$/', (string)$payload->NEW_PIN)){
+				return $this->secondFactorFail('Enter the current PIN and a new 4 digit PIN.');
 			}
 			$this->db->where('USER_ID', $user->USER_ID);
 			$existing = $this->db->get('USER_PIN');
@@ -2349,6 +2361,7 @@
 			$this->db->where('USER_ID', $user->USER_ID);
 			$this->db->update('USER_PIN', array(
 				'PIN_HASH' => password_hash((string)$payload->NEW_PIN, PASSWORD_DEFAULT),
+				'PIN_LENGTH' => strlen((string)$payload->NEW_PIN),
 				'UPDATED_AT' => date('Y-m-d H:i:s')
 			));
 			return json_encode(array('status' => 'SUCCESS', 'message' => 'PIN updated'));
@@ -2360,8 +2373,8 @@
 			if($error !== null){
 				return $error;
 			}
-			if(!isset($payload->PIN)){
-				return $this->secondFactorFail('PIN is required.');
+			if(!isset($payload->PIN) || !preg_match('/^[0-9]{4}$/', (string)$payload->PIN)){
+				return $this->secondFactorFail('PIN must be 4 digits.');
 			}
 			$this->db->where('USER_ID', $user->USER_ID);
 			$existing = $this->db->get('USER_PIN');
@@ -2751,14 +2764,6 @@
 			return $attempts;
 		}
 
-		private function futronicLockedResponse(){
-			return json_encode(array(
-				'status' => 'FAILED',
-				'locked' => true,
-				'message' => 'Futronic sign-in is paused after 5 tries. Use SMS OTP or your PIN.'
-			));
-		}
-
 		private function futronicChallenge($userId, $purpose){
 			$challenge = bin2hex(openssl_random_pseudo_bytes(32));
 			$this->db->where('USER_ID', $userId);
@@ -2811,9 +2816,6 @@
 			$attempts = $this->readFutronicAttempts($payload->TOKEN);
 			if($attempts === null){
 				return $this->secondFactorFail('Second factor session expired. Sign in again.');
-			}
-			if($enrolled !== null && $attempts >= 5){
-				return $this->futronicLockedResponse();
 			}
 			$template = null;
 			if($enrolled !== null){
@@ -2891,9 +2893,6 @@
 			if($attempts === null){
 				return $this->secondFactorFail('Second factor session expired. Sign in again.');
 			}
-			if($attempts >= 5){
-				return $this->futronicLockedResponse();
-			}
 			if(!isset($payload->match) || !is_bool($payload->match)){
 				return $this->secondFactorFail('The Futronic scan could not be read. Place your finger again.');
 			}
@@ -2908,14 +2907,11 @@
 			$challengeOk = $this->takeFutronicChallenge($user->USER_ID, 'login', $challenge);
 			$macOk = $this->futronicMacOk($settings['secret'], $macPayload, isset($payload->mac) ? $payload->mac : '');
 			if(!$challengeOk || !$macOk || $payload->match !== true){
-				$attempts = $this->recordFutronicFailure($payload->TOKEN);
-				if($attempts >= 5){
-					return $this->futronicLockedResponse();
-				}
+				$this->recordFutronicFailure($payload->TOKEN);
 				if(!$challengeOk || !$macOk){
 					return $this->secondFactorFail('Futronic sign-in was rejected. Place your finger again.');
 				}
-				return $this->secondFactorFail('Fingerprint did not match. Place the enrolled finger on the Futronic scanner, or use SMS OTP or your PIN.');
+				return $this->secondFactorFail('Fingerprint did not match. Place the enrolled finger on the Futronic scanner.');
 			}
 			$this->consumeSecondFactorToken($payload->TOKEN);
 			return json_encode(array('status' => 'SUCCESS', 'message' => 'Futronic fingerprint verified'));
